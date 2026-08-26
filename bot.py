@@ -1,12 +1,17 @@
 import asyncio
+import logging
 import os
 
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, BusinessConnection
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+
+# =========================================================
+# CONFIG
+# =========================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", "10000"))
@@ -15,15 +20,37 @@ if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не установлен")
 
 
+# =========================================================
+# LOGGING
+# =========================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
+)
+
+logger = logging.getLogger("TelegaOn")
+
+
+# =========================================================
+# BOT
+# =========================================================
+
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 
 
-# =========================
-# КЛАВИАТУРЫ
-# =========================
+# Здесь пока храним подключения в памяти.
+# Позже перенесём это в базу данных.
+business_connections = {}
+
+
+# =========================================================
+# MAIN MENU
+# =========================================================
 
 def main_menu():
+
     kb = InlineKeyboardBuilder()
 
     kb.button(
@@ -46,7 +73,12 @@ def main_menu():
     return kb.as_markup()
 
 
+# =========================================================
+# SETTINGS MENU
+# =========================================================
+
 def settings_menu():
+
     kb = InlineKeyboardBuilder()
 
     buttons = [
@@ -64,7 +96,10 @@ def settings_menu():
     ]
 
     for text, callback_data in buttons:
-        kb.button(text=text, callback_data=callback_data)
+        kb.button(
+            text=text,
+            callback_data=callback_data
+        )
 
     kb.button(
         text="◀️ Назад",
@@ -76,21 +111,37 @@ def settings_menu():
     return kb.as_markup()
 
 
+# =========================================================
+# BACK BUTTONS
+# =========================================================
+
 def back_to_main():
+
     kb = InlineKeyboardBuilder()
-    kb.button(text="◀️ Назад", callback_data="main")
+
+    kb.button(
+        text="◀️ Назад",
+        callback_data="main"
+    )
+
     return kb.as_markup()
 
 
 def back_to_settings():
+
     kb = InlineKeyboardBuilder()
-    kb.button(text="◀️ Назад", callback_data="settings")
+
+    kb.button(
+        text="◀️ Назад",
+        callback_data="settings"
+    )
+
     return kb.as_markup()
 
 
-# =========================
-# START
-# =========================
+# =========================================================
+# /START
+# =========================================================
 
 @dp.message(CommandStart())
 async def start(message: Message):
@@ -106,9 +157,136 @@ async def start(message: Message):
     )
 
 
-# =========================
-# ГЛАВНОЕ МЕНЮ
-# =========================
+# =========================================================
+# BUSINESS CONNECTION
+# =========================================================
+
+@dp.business_connection()
+async def business_connection_handler(
+    connection: BusinessConnection
+):
+
+    connection_id = connection.id
+    user_id = connection.user.id
+
+    business_connections[connection_id] = connection
+
+    logger.info("========================================")
+    logger.info("📡 BUSINESS CONNECTION UPDATE")
+    logger.info("Connection ID: %s", connection_id)
+    logger.info("Business user ID: %s", user_id)
+    logger.info("User name: %s", connection.user.full_name)
+    logger.info("Username: @%s", connection.user.username)
+    logger.info("Enabled: %s", connection.is_enabled)
+
+    # В новых версиях Bot API права находятся
+    # в connection.rights.
+    if connection.rights:
+        logger.info("Business rights: %s", connection.rights)
+
+    logger.info("========================================")
+
+    if connection.is_enabled:
+
+        logger.info(
+            "✅ TelegaOn успешно подключён "
+            "к Business-аккаунту пользователя %s",
+            user_id
+        )
+
+    else:
+
+        logger.info(
+            "🔴 TelegaOn отключён "
+            "от Business-аккаунта пользователя %s",
+            user_id
+        )
+
+
+# =========================================================
+# BUSINESS MESSAGE TEST
+# =========================================================
+
+@dp.business_message()
+async def business_message_handler(message: Message):
+
+    logger.info("========================================")
+    logger.info("📨 NEW BUSINESS MESSAGE")
+    logger.info("Message ID: %s", message.message_id)
+    logger.info("Chat ID: %s", message.chat.id)
+    logger.info(
+        "Business Connection ID: %s",
+        message.business_connection_id
+    )
+
+    if message.from_user:
+        logger.info(
+            "From: %s (@%s)",
+            message.from_user.full_name,
+            message.from_user.username
+        )
+
+    if message.text:
+        logger.info("Text: %s", message.text)
+
+    logger.info("========================================")
+
+
+# =========================================================
+# EDITED BUSINESS MESSAGE TEST
+# =========================================================
+
+@dp.edited_business_message()
+async def edited_business_message_handler(
+    message: Message
+):
+
+    logger.info("========================================")
+    logger.info("✏️ EDITED BUSINESS MESSAGE")
+    logger.info("Message ID: %s", message.message_id)
+    logger.info("Chat ID: %s", message.chat.id)
+    logger.info(
+        "Business Connection ID: %s",
+        message.business_connection_id
+    )
+
+    if message.text:
+        logger.info("New text: %s", message.text)
+
+    logger.info("========================================")
+
+
+# =========================================================
+# DELETED BUSINESS MESSAGES TEST
+# =========================================================
+
+@dp.deleted_business_messages()
+async def deleted_business_messages_handler(event):
+
+    logger.info("========================================")
+    logger.info("🗑️ BUSINESS MESSAGES DELETED")
+
+    logger.info(
+        "Business Connection ID: %s",
+        event.business_connection_id
+    )
+
+    logger.info(
+        "Chat ID: %s",
+        event.chat.id
+    )
+
+    logger.info(
+        "Deleted message IDs: %s",
+        event.message_ids
+    )
+
+    logger.info("========================================")
+
+
+# =========================================================
+# MAIN MENU
+# =========================================================
 
 @dp.callback_query(F.data == "main")
 async def main_menu_callback(callback: CallbackQuery):
@@ -122,9 +300,9 @@ async def main_menu_callback(callback: CallbackQuery):
     await callback.answer()
 
 
-# =========================
-# ПОДКЛЮЧЕНИЕ
-# =========================
+# =========================================================
+# CONNECT
+# =========================================================
 
 @dp.callback_query(F.data == "connect")
 async def connect(callback: CallbackQuery):
@@ -144,9 +322,9 @@ async def connect(callback: CallbackQuery):
     await callback.answer()
 
 
-# =========================
-# НАСТРОЙКИ
-# =========================
+# =========================================================
+# SETTINGS
+# =========================================================
 
 @dp.callback_query(F.data == "settings")
 async def settings(callback: CallbackQuery):
@@ -160,9 +338,9 @@ async def settings(callback: CallbackQuery):
     await callback.answer()
 
 
-# =========================
-# ФУНКЦИИ
-# =========================
+# =========================================================
+# SETTINGS ITEMS
+# =========================================================
 
 @dp.callback_query(F.data == "deleted")
 async def deleted(callback: CallbackQuery):
@@ -331,9 +509,9 @@ async def banwords(callback: CallbackQuery):
     await callback.answer()
 
 
-# =========================
-# ПОМОЩЬ СОТРУДНИКОВ
-# =========================
+# =========================================================
+# STAFF HELP
+# =========================================================
 
 @dp.callback_query(F.data == "staff_help")
 async def staff_help(callback: CallbackQuery):
@@ -350,11 +528,12 @@ async def staff_help(callback: CallbackQuery):
     await callback.answer()
 
 
-# =========================
-# HTTP-СЕРВЕР ДЛЯ RENDER
-# =========================
+# =========================================================
+# RENDER HTTP SERVER
+# =========================================================
 
 async def health(request):
+
     return web.Response(
         text="TelegaOn is running!"
     )
@@ -379,20 +558,33 @@ async def start_web_server():
 
     await site.start()
 
-    print(f"HTTP server started on 0.0.0.0:{PORT}")
+    logger.info(
+        "🌐 HTTP server started on 0.0.0.0:%s",
+        PORT
+    )
 
 
-# =========================
-# ЗАПУСК
-# =========================
+# =========================================================
+# START
+# =========================================================
 
 async def main():
 
     await start_web_server()
 
-    print("TelegaOn запущен!")
+    logger.info("🤖 TelegaOn started!")
 
-    await dp.start_polling(bot)
+    await dp.start_polling(
+        bot,
+        allowed_updates=[
+            "message",
+            "callback_query",
+            "business_connection",
+            "business_message",
+            "edited_business_message",
+            "deleted_business_messages",
+        ]
+    )
 
 
 if __name__ == "__main__":
