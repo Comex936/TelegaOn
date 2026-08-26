@@ -1,3 +1,4 @@
+```python
 import asyncio
 import logging
 import os
@@ -25,8 +26,6 @@ PORT = int(os.getenv("PORT", "10000"))
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY")
 
-# ID владельца TelegaOn.
-# Добавь OWNER_ID в Environment Variables Render.
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
 
@@ -66,11 +65,51 @@ supabase: Client = create_client(
 
 
 # =========================================================
+# TEMPORARY USER SETTINGS
+# =========================================================
+
+user_settings = {}
+
+waiting_for_offline_text = set()
+
+user_menu_messages = {}
+
+
+def get_settings(user_id: int):
+
+    if user_id not in user_settings:
+
+        user_settings[user_id] = {
+            "deleted": True,
+            "edited": True,
+            "audio": True,
+            "video": True,
+            "photos": True,
+            "files": True,
+            "stickers": True,
+            "offline": False,
+            "offline_text": "Пока не установлен.",
+        }
+
+    return user_settings[user_id]
+
+
+def status_text(enabled: bool) -> str:
+
+    if enabled:
+        return "🟢 Включено"
+
+    return "🔴 Выключено"
+
+
+# =========================================================
 # DATABASE HELPERS
 # =========================================================
 
 def get_user(telegram_id: int):
+
     try:
+
         result = (
             supabase
             .table("users")
@@ -94,14 +133,17 @@ def save_user(
     username: Optional[str],
     full_name: str
 ):
+
     try:
+
         existing = get_user(telegram_id)
 
-        # Владельца нельзя случайно превратить в обычного пользователя.
         if telegram_id == OWNER_ID:
             role = "owner"
+
         elif existing:
             role = existing.get("role", "user")
+
         else:
             role = "user"
 
@@ -125,6 +167,7 @@ def save_user(
 
 
 def get_role(telegram_id: int) -> str:
+
     if telegram_id == OWNER_ID:
         return "owner"
 
@@ -141,11 +184,18 @@ def is_owner(telegram_id: int) -> bool:
 
 
 def is_admin(telegram_id: int) -> bool:
-    return get_role(telegram_id) in ("owner", "admin")
+    return get_role(telegram_id) in (
+        "owner",
+        "admin"
+    )
 
 
 def is_tester(telegram_id: int) -> bool:
-    return get_role(telegram_id) in ("owner", "admin", "tester")
+    return get_role(telegram_id) in (
+        "owner",
+        "admin",
+        "tester"
+    )
 
 
 # =========================================================
@@ -153,7 +203,9 @@ def is_tester(telegram_id: int) -> bool:
 # =========================================================
 
 def get_users_by_role(role: str):
+
     try:
+
         result = (
             supabase
             .table("users")
@@ -165,7 +217,11 @@ def get_users_by_role(role: str):
         return result.data or []
 
     except Exception:
-        logger.exception("Ошибка получения списка пользователей")
+
+        logger.exception(
+            "Ошибка получения списка пользователей"
+        )
+
         return []
 
 
@@ -175,7 +231,9 @@ def set_user_role(
     username: Optional[str] = None,
     full_name: Optional[str] = None
 ):
+
     try:
+
         data = {
             "telegram_id": telegram_id,
             "role": role,
@@ -200,7 +258,11 @@ def set_user_role(
         return True
 
     except Exception:
-        logger.exception("Ошибка изменения роли")
+
+        logger.exception(
+            "Ошибка изменения роли"
+        )
+
         return False
 
 
@@ -211,7 +273,9 @@ def set_user_role(
 def save_business_connection(
     connection: BusinessConnection
 ):
+
     try:
+
         rights = None
 
         if connection.rights:
@@ -237,6 +301,7 @@ def save_business_connection(
         )
 
     except Exception:
+
         logger.exception(
             "Ошибка сохранения Business Connection"
         )
@@ -343,6 +408,7 @@ def save_business_message(message: Message):
         )
 
     except Exception:
+
         logger.exception(
             "Ошибка сохранения Business Message"
         )
@@ -366,8 +432,8 @@ def main_menu(user_id: int):
         callback_data="settings"
     )
 
-    # Админы и тестеры доступны владельцу и админам.
     if is_admin(user_id):
+
         kb.button(
             text="👥 Админы и тестеры",
             callback_data="staff"
@@ -405,6 +471,7 @@ def settings_menu():
     ]
 
     for text, callback_data in buttons:
+
         kb.button(
             text=text,
             callback_data=callback_data
@@ -445,767 +512,44 @@ def back_to_main(user_id: int):
 
 
 # =========================================================
-# START
+# FUNCTION CONTROLS
 # =========================================================
 
-@dp.message(CommandStart())
-async def start(message: Message):
-
-    if message.from_user:
-
-        save_user(
-            message.from_user.id,
-            message.from_user.username,
-            message.from_user.full_name
-        )
-
-    user_id = message.from_user.id
-
-    await message.answer(
-        "Привет, дорогой пользователь! 💎\n\n"
-        "Добро пожаловать в TelegaOn!\n\n"
-        "Здесь я буду присылать удалённые "
-        "сообщения, аудиосообщения, "
-        "видеосообщения и так далее.\n\n"
-        "Для начала подключите TelegaOn.",
-        reply_markup=main_menu(user_id)
-    )
-
-
-# =========================================================
-# MAIN MENU
-# =========================================================
-
-@dp.callback_query(F.data == "main")
-async def main_callback(
-    callback: CallbackQuery
+def function_controls(
+    function_name: str,
+    enabled: bool,
+    can_edit: bool = False
 ):
-
-    user_id = callback.from_user.id
-
-    await callback.message.edit_text(
-        "💎 TelegaOn\n\n"
-        "Выберите нужный раздел:",
-        reply_markup=main_menu(user_id)
-    )
-
-    await callback.answer()
-
-
-# =========================================================
-# CONNECT
-# =========================================================
-
-@dp.callback_query(F.data == "connect")
-async def connect_callback(
-    callback: CallbackQuery
-):
-
-    await callback.message.edit_text(
-        "⚡ Подключение TelegaOn\n\n"
-        "Чтобы подключить TelegaOn:\n\n"
-        "1️⃣ Откройте настройки Telegram.\n\n"
-        "2️⃣ Перейдите в раздел "
-        "автоматизаций чатов.\n\n"
-        "3️⃣ Добавьте туда TelegaOn.\n\n"
-        "4️⃣ Выдайте необходимые разрешения.\n\n"
-        "После подключения TelegaOn автоматически "
-        "получит Business Connection.",
-        reply_markup=back_to_main(
-            callback.from_user.id
-        )
-    )
-
-    await callback.answer()
-
-
-# =========================================================
-# SETTINGS
-# =========================================================
-
-@dp.callback_query(F.data == "settings")
-async def settings_callback(
-    callback: CallbackQuery
-):
-
-    await callback.message.edit_text(
-        "⚙️ Настройки TelegaOn\n\n"
-        "Выберите функцию, которую хотите настроить:",
-        reply_markup=settings_menu()
-    )
-
-    await callback.answer()
-
-
-# =========================================================
-# SETTINGS FUNCTIONS
-# =========================================================
-
-@dp.callback_query(F.data == "deleted")
-async def deleted_callback(
-    callback: CallbackQuery
-):
-
-    await callback.message.edit_text(
-        "🗑️ Удалённые сообщения\n\n"
-        "TelegaOn будет сохранять и присылать "
-        "сообщения, которые были удалены "
-        "в подключённых чатах.\n\n"
-        "Статус: 🟢 Включено\n\n"
-        "Элементы управления будут добавлены "
-        "на следующем этапе.",
-        reply_markup=back_to_settings()
-    )
-
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "edited")
-async def edited_callback(
-    callback: CallbackQuery
-):
-
-    await callback.message.edit_text(
-        "✏️ Изменённые сообщения\n\n"
-        "TelegaOn будет показывать предыдущую "
-        "версию сообщения.\n\n"
-        "Пример:\n\n"
-        "✏️ Сообщение было редактировано!\n"
-        "Пользователь: 💬 @юзер\n\n"
-        "До:\n"
-        "Как дела! Я в шоке!\n\n"
-        "После:\n"
-        "Я в школе! Как дела?",
-        reply_markup=back_to_settings()
-    )
-
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "audio")
-async def audio_callback(
-    callback: CallbackQuery
-):
-
-    await callback.message.edit_text(
-        "🎤 Аудиосообщения\n\n"
-        "Удалённые аудиосообщения будут "
-        "сохраняться.\n\n"
-        "Статус: 🟢 Включено",
-        reply_markup=back_to_settings()
-    )
-
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "video")
-async def video_callback(
-    callback: CallbackQuery
-):
-
-    await callback.message.edit_text(
-        "🎥 Видеосообщения\n\n"
-        "Удалённые видеосообщения будут "
-        "сохраняться.\n\n"
-        "Статус: 🟢 Включено",
-        reply_markup=back_to_settings()
-    )
-
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "photos")
-async def photos_callback(
-    callback: CallbackQuery
-):
-
-    await callback.message.edit_text(
-        "📷 Фотографии\n\n"
-        "Удалённые фотографии будут "
-        "сохраняться.\n\n"
-        "Статус: 🟢 Включено",
-        reply_markup=back_to_settings()
-    )
-
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "files")
-async def files_callback(
-    callback: CallbackQuery
-):
-
-    await callback.message.edit_text(
-        "📎 Файлы\n\n"
-        "Удалённые файлы будут "
-        "сохраняться.\n\n"
-        "Статус: 🟢 Включено",
-        reply_markup=back_to_settings()
-    )
-
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "stickers")
-async def stickers_callback(
-    callback: CallbackQuery
-):
-
-    await callback.message.edit_text(
-        "🎭 Стикеры\n\n"
-        "Удалённые стикеры будут "
-        "сохраняться.\n\n"
-        "Статус: 🟢 Включено",
-        reply_markup=back_to_settings()
-    )
-
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "notifications")
-async def notifications_callback(
-    callback: CallbackQuery
-):
-
-    await callback.message.edit_text(
-        "🔔 Уведомления\n\n"
-        "Выберите, какие события должны "
-        "приходить вам от TelegaOn.\n\n"
-        "🗑️ Удалённые сообщения — 🟢\n"
-        "✏️ Изменённые сообщения — 🟢\n"
-        "🎤 Аудиосообщения — 🟢\n"
-        "🎥 Видеосообщения — 🟢\n"
-        "📷 Фотографии — 🟢\n"
-        "📎 Файлы — 🟢\n"
-        "🎭 Стикеры — 🟢",
-        reply_markup=back_to_settings()
-    )
-
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "offline")
-async def offline_callback(
-    callback: CallbackQuery
-):
-
-    await callback.message.edit_text(
-        "📴 Оффлайн-ответ\n\n"
-        "TelegaOn сможет отправлять "
-        "автоматический ответ, когда "
-        "вы будете не в сети.\n\n"
-        "Статус: 🔴 Выключено",
-        reply_markup=back_to_settings()
-    )
-
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "banwords")
-async def banwords_callback(
-    callback: CallbackQuery
-):
-
-    await callback.message.edit_text(
-        "🚫 Бан-слова\n\n"
-        "Сейчас эта функция недоступна "
-        "или находится в бета-тесте.\n\n"
-        "Информация будет позже.",
-        reply_markup=back_to_settings()
-    )
-
-    await callback.answer()
-
-
-# =========================================================
-# STAFF MENU
-# =========================================================
-
-def staff_menu(user_id: int):
 
     kb = InlineKeyboardBuilder()
 
-    kb.button(
-        text="👑 Список админов",
-        callback_data="admins"
-    )
+    if enabled:
 
-    kb.button(
-        text="🧪 Список тестеров",
-        callback_data="testers"
-    )
-
-    # Добавлять админов может только владелец.
-    if is_owner(user_id):
         kb.button(
-            text="➕ Добавить админа",
-            callback_data="add_admin"
+            text="🔴 Выключить",
+            callback_data=f"disable:{function_name}"
         )
 
-    # Админы тоже могут добавлять тестеров.
-    if is_admin(user_id):
+    else:
+
         kb.button(
-            text="➕ Добавить тестера",
-            callback_data="add_tester"
+            text="🟢 Включить",
+            callback_data=f"enable:{function_name}"
+        )
+
+    if can_edit:
+
+        kb.button(
+            text="✏️ Изменить ответ",
+            callback_data=f"edit:{function_name}"
         )
 
     kb.button(
         text="◀️ Назад",
-        callback_data="main"
+        callback_data="settings"
     )
 
     kb.adjust(1)
 
     return kb.as_markup()
-
-
-@dp.callback_query(F.data == "staff")
-async def staff_callback(
-    callback: CallbackQuery
-):
-
-    user_id = callback.from_user.id
-
-    if not is_admin(user_id):
-        await callback.answer(
-            "⛔ Доступ запрещён.",
-            show_alert=True
-        )
-        return
-
-    await callback.message.edit_text(
-        "👥 Админы и тестеры\n\n"
-        "Здесь можно управлять "
-        "администраторами и участниками "
-        "бета-тестирования.",
-        reply_markup=staff_menu(user_id)
-    )
-
-    await callback.answer()
-
-
-# =========================================================
-# ADMIN LIST
-# =========================================================
-
-@dp.callback_query(F.data == "admins")
-async def admins_callback(
-    callback: CallbackQuery
-):
-
-    if not is_admin(callback.from_user.id):
-        await callback.answer(
-            "⛔ Доступ запрещён.",
-            show_alert=True
-        )
-        return
-
-    admins = get_users_by_role("admin")
-
-    text = "👑 Администраторы\n\n"
-
-    if not admins:
-        text += "Пока нет добавленных администраторов."
-    else:
-        for index, user in enumerate(
-            admins,
-            start=1
-        ):
-            username = user.get("username")
-
-            if username:
-                name = f"@{username}"
-            else:
-                name = user.get(
-                    "full_name",
-                    str(user["telegram_id"])
-                )
-
-            text += f"{index}. {name}\n"
-
-    await callback.message.edit_text(
-        text,
-        reply_markup=staff_menu(
-            callback.from_user.id
-        )
-    )
-
-    await callback.answer()
-
-
-# =========================================================
-# TESTER LIST
-# =========================================================
-
-@dp.callback_query(F.data == "testers")
-async def testers_callback(
-    callback: CallbackQuery
-):
-
-    if not is_admin(callback.from_user.id):
-        await callback.answer(
-            "⛔ Доступ запрещён.",
-            show_alert=True
-        )
-        return
-
-    testers = get_users_by_role("tester")
-
-    text = "🧪 Тестеры\n\n"
-
-    if not testers:
-        text += "Пока нет добавленных тестеров."
-    else:
-        for index, user in enumerate(
-            testers,
-            start=1
-        ):
-            username = user.get("username")
-
-            if username:
-                name = f"@{username}"
-            else:
-                name = user.get(
-                    "full_name",
-                    str(user["telegram_id"])
-                )
-
-            text += f"{index}. {name}\n"
-
-    await callback.message.edit_text(
-        text,
-        reply_markup=staff_menu(
-            callback.from_user.id
-        )
-    )
-
-    await callback.answer()
-
-
-# =========================================================
-# ADD ADMIN
-# =========================================================
-
-@dp.callback_query(F.data == "add_admin")
-async def add_admin_callback(
-    callback: CallbackQuery
-):
-
-    if not is_owner(callback.from_user.id):
-        await callback.answer(
-            "⛔ Только владелец может добавлять админов.",
-            show_alert=True
-        )
-        return
-
-    await callback.message.edit_text(
-        "➕ Добавление администратора\n\n"
-        "Для добавления пользователя отправьте "
-        "его Telegram ID отдельным сообщением.\n\n"
-        "Пример:\n"
-        "`123456789`\n\n"
-        "После этого мы автоматически выдадим "
-        "ему роль администратора.",
-        reply_markup=back_to_main(
-            callback.from_user.id
-        ),
-        parse_mode="Markdown"
-    )
-
-    await callback.answer()
-
-
-# =========================================================
-# ADD TESTER
-# =========================================================
-
-@dp.callback_query(F.data == "add_tester")
-async def add_tester_callback(
-    callback: CallbackQuery
-):
-
-    if not is_admin(callback.from_user.id):
-        await callback.answer(
-            "⛔ Только админы могут добавлять тестеров.",
-            show_alert=True
-        )
-        return
-
-    await callback.message.edit_text(
-        "🧪 Добавление тестера\n\n"
-        "Для добавления пользователя отправьте "
-        "его Telegram ID отдельным сообщением.\n\n"
-        "Пример:\n"
-        "`123456789`\n\n"
-        "После добавления пользователь получит "
-        "доступ к бета-функциям.",
-        reply_markup=back_to_main(
-            callback.from_user.id
-        ),
-        parse_mode="Markdown"
-    )
-
-    await callback.answer()
-
-
-# =========================================================
-# BUSINESS CONNECTION
-# =========================================================
-
-@dp.business_connection()
-async def business_connection_handler(
-    connection: BusinessConnection
-):
-
-    logger.info("========================================")
-    logger.info("📡 BUSINESS CONNECTION UPDATE")
-    logger.info(
-        "Connection ID: %s",
-        connection.id
-    )
-    logger.info(
-        "Business user ID: %s",
-        connection.user.id
-    )
-    logger.info(
-        "User name: %s",
-        connection.user.full_name
-    )
-    logger.info(
-        "Username: @%s",
-        connection.user.username
-    )
-    logger.info(
-        "Enabled: %s",
-        connection.is_enabled
-    )
-
-    save_business_connection(
-        connection
-    )
-
-    logger.info("========================================")
-
-
-# =========================================================
-# BUSINESS MESSAGE
-# =========================================================
-
-@dp.business_message()
-async def business_message_handler(
-    message: Message
-):
-
-    logger.info("========================================")
-    logger.info("📨 NEW BUSINESS MESSAGE")
-    logger.info(
-        "Message ID: %s",
-        message.message_id
-    )
-    logger.info(
-        "Chat ID: %s",
-        message.chat.id
-    )
-    logger.info(
-        "Business Connection ID: %s",
-        message.business_connection_id
-    )
-
-    if message.from_user:
-        logger.info(
-            "From: %s (@%s)",
-            message.from_user.full_name,
-            message.from_user.username
-        )
-
-    if message.text:
-        logger.info(
-            "Text: %s",
-            message.text
-        )
-
-    save_business_message(message)
-
-    logger.info("========================================")
-
-
-# =========================================================
-# EDITED BUSINESS MESSAGE
-# =========================================================
-
-@dp.edited_business_message()
-async def edited_business_message_handler(
-    message: Message
-):
-
-    logger.info("========================================")
-    logger.info("✏️ EDITED BUSINESS MESSAGE")
-
-    logger.info(
-        "Message ID: %s",
-        message.message_id
-    )
-
-    logger.info(
-        "Chat ID: %s",
-        message.chat.id
-    )
-
-    logger.info(
-        "Business Connection ID: %s",
-        message.business_connection_id
-    )
-
-    if message.text:
-        logger.info(
-            "New text: %s",
-            message.text
-        )
-
-    save_business_message(message)
-
-    logger.info("========================================")
-
-
-# =========================================================
-# DELETED BUSINESS MESSAGES
-# =========================================================
-
-@dp.deleted_business_messages()
-async def deleted_business_messages_handler(
-    event
-):
-
-    logger.info("========================================")
-    logger.info("🗑️ BUSINESS MESSAGES DELETED")
-
-    logger.info(
-        "Business Connection ID: %s",
-        event.business_connection_id
-    )
-
-    logger.info(
-        "Chat ID: %s",
-        event.chat.id
-    )
-
-    logger.info(
-        "Deleted message IDs: %s",
-        event.message_ids
-    )
-
-    logger.info("========================================")
-
-
-# =========================================================
-# STAFF HELP
-# =========================================================
-
-@dp.callback_query(F.data == "staff_help")
-async def staff_help_callback(
-    callback: CallbackQuery
-):
-
-    await callback.message.edit_text(
-        "🧑‍💻 Помощь сотрудников\n\n"
-        "Функция находится в бета-тесте.\n\n"
-        "Информация будет позже.",
-        reply_markup=back_to_main(
-            callback.from_user.id
-        )
-    )
-
-    await callback.answer()
-
-
-# =========================================================
-# RENDER HTTP SERVER
-# =========================================================
-
-async def health(request):
-
-    return web.Response(
-        text="TelegaOn is running!"
-    )
-
-
-async def start_web_server():
-
-    app = web.Application()
-
-    app.router.add_get(
-        "/",
-        health
-    )
-
-    app.router.add_get(
-        "/health",
-        health
-    )
-
-    runner = web.AppRunner(app)
-
-    await runner.setup()
-
-    site = web.TCPSite(
-        runner,
-        host="0.0.0.0",
-        port=PORT
-    )
-
-    await site.start()
-
-    logger.info(
-        "🌐 HTTP server started on 0.0.0.0:%s",
-        PORT
-    )
-
-
-# =========================================================
-# START
-# =========================================================
-
-async def main():
-
-    await start_web_server()
-
-    # Проверяем Supabase.
-    try:
-
-        (
-            supabase
-            .table("users")
-            .select("telegram_id")
-            .limit(1)
-            .execute()
-        )
-
-        logger.info(
-            "🗄️ Supabase подключён успешно!"
-        )
-
-    except Exception:
-
-        logger.exception(
-            "❌ Не удалось подключиться к Supabase"
-        )
-
-    logger.info(
-        "🤖 TelegaOn started!"
-    )
-
-    await dp.start_polling(
-        bot,
-        allowed_updates=[
-            "message",
-            "callback_query",
-            "business_connection",
-            "business_message",
-            "edited_business_message",
-            "deleted_business_messages",
-        ]
-    )
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+```
