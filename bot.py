@@ -552,4 +552,4 @@ def function_controls(
     kb.adjust(1)
 
     return kb.as_markup()
-```
+    
