@@ -1,21 +1,26 @@
 import asyncio
 import logging
 import os
-import re
-from datetime import datetime, timedelta, timezone
+from collections import defaultdict
+from datetime import datetime
 
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import (
+    Message,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    CallbackQuery,
+)
 
-# ============================================================
-# CONFIG
-# ============================================================
+# =========================================================
+# НАСТРОЙКИ
+# =========================================================
 
 TOKEN = os.getenv("BOT_TOKEN")
 
 if not TOKEN:
-    raise RuntimeError("Не найдена переменная BOT_TOKEN")
+    raise RuntimeError("Переменная BOT_TOKEN не установлена")
 
 logging.basicConfig(level=logging.INFO)
 
@@ -23,790 +28,623 @@ bot = Bot(TOKEN)
 dp = Dispatcher()
 
 
-# ============================================================
-# ROLES
-# ============================================================
+# =========================================================
+# ВРЕМЕННОЕ ХРАНИЛИЩЕ
+# =========================================================
+# Позже заменим это на Supabase.
+#
+# users[user_id] = {
+#     "username": "...",
+#     "name": "...",
+#     "balance": 1000,
+# }
 
-RANK_NAMES = {
-    0: "Участник",
-    1: "Младший модератор",
-    2: "Модератор",
-    3: "Младший админ",
-    4: "Админ",
-    5: "Владелец",
-}
+users = {}
 
-# Временное хранилище.
-# Позже здесь будет Supabase.
-ranks = {}
-warnings = {}
-mutes = {}
-bans = {}
+# История операций
+history = defaultdict(list)
 
-
-# ============================================================
-# HELPERS
-# ============================================================
-
-def key(chat_id: int, user_id: int):
-    return chat_id, user_id
+# Язык пользователя
+languages = defaultdict(lambda: "ru")
 
 
-def get_rank(chat_id: int, user_id: int) -> int:
-    return ranks.get(key(chat_id, user_id), 0)
+# =========================================================
+# БАЗОВЫЕ ФУНКЦИИ
+# =========================================================
+
+START_BALANCE = 1000
 
 
-def set_rank(chat_id: int, user_id: int, rank: int):
-    ranks[key(chat_id, user_id)] = rank
-
-
-def mention(user):
-    if user.username:
-        return f"@{user.username}"
-
-    return user.first_name
-
-
-def parse_duration(text: str | None):
+def get_user(tg_user):
     """
-    Поддерживает:
-
-    30с
-    10м
-    2ч
-    7д
-    2н
+    Создаёт игрока при первом взаимодействии.
     """
 
-    if not text:
-        return None
+    user_id = tg_user.id
 
-    text = text.lower().strip()
+    if user_id not in users:
+        users[user_id] = {
+            "username": tg_user.username,
+            "name": tg_user.first_name or "Игрок",
+            "balance": START_BALANCE,
+        }
 
-    match = re.fullmatch(
-        r"(\d+)\s*(с|сек|м|мин|ч|час|д|дн|н|нед)",
-        text
-    )
-
-    if not match:
-        return None
-
-    amount = int(match.group(1))
-    unit = match.group(2)
-
-    if unit in ("с", "сек"):
-        delta = timedelta(seconds=amount)
-
-    elif unit in ("м", "мин"):
-        delta = timedelta(minutes=amount)
-
-    elif unit in ("ч", "час"):
-        delta = timedelta(hours=amount)
-
-    elif unit in ("д", "дн"):
-        delta = timedelta(days=amount)
-
-    elif unit in ("н", "нед"):
-        delta = timedelta(weeks=amount)
+        history[user_id].append({
+            "type": "bonus",
+            "amount": START_BALANCE,
+            "description": "Стартовый баланс",
+            "date": datetime.now(),
+        })
 
     else:
-        return None
+        # Обновляем данные Telegram-профиля
+        users[user_id]["username"] = tg_user.username
+        users[user_id]["name"] = tg_user.first_name or "Игрок"
 
-    return datetime.now(timezone.utc) + delta
-
-
-def duration_text(date):
-    if date is None:
-        return "навсегда"
-
-    return date.strftime("%d.%m.%Y %H:%M UTC")
+    return users[user_id]
 
 
-async def get_target(message: Message, args: list[str]):
-    """
-    Приоритет:
+def get_username(user):
+    if user.get("username"):
+        return f"@{user['username']}"
 
-    1. Ответ на сообщение
-    2. @username
-
-    Telegram не позволяет боту надёжно получить
-    любого пользователя только по username,
-    поэтому reply является предпочтительным способом.
-    """
-
-    if message.reply_to_message:
-        return message.reply_to_message.from_user
-
-    if not args:
-        return None
-
-    username = args[0]
-
-    if not username.startswith("@"):
-        return None
-
-    username = username[1:].lower()
-
-    # Ищем среди известных пользователей этого чата.
-    for (chat_id, user_id), rank in ranks.items():
-        if chat_id != message.chat.id:
-            continue
-
-        try:
-            member = await bot.get_chat_member(
-                message.chat.id,
-                user_id
-            )
-
-            if (
-                member.user.username
-                and member.user.username.lower() == username
-            ):
-                return member.user
-
-        except Exception:
-            pass
-
-    return None
+    return user["name"]
 
 
-async def can_manage(
-    message: Message,
-    target_id: int,
-    minimum_rank: int = 1
+def add_history(
+    user_id: int,
+    operation_type: str,
+    amount: int,
+    description: str,
 ):
-    actor_rank = get_rank(
-        message.chat.id,
-        message.from_user.id
+    history[user_id].append({
+        "type": operation_type,
+        "amount": amount,
+        "description": description,
+        "date": datetime.now(),
+    })
+
+
+def change_balance(
+    user_id: int,
+    amount: int,
+    operation_type: str,
+    description: str,
+):
+    users[user_id]["balance"] += amount
+
+    add_history(
+        user_id,
+        operation_type,
+        amount,
+        description,
     )
 
-    target_rank = get_rank(
-        message.chat.id,
-        target_id
-    )
 
-    if actor_rank < minimum_rank:
-        await message.reply(
-            f"❌ Недостаточно прав.\n"
-            f"Требуется: {minimum_rank} — "
-            f"{RANK_NAMES[minimum_rank]}"
-        )
-        return False
-
-    if target_id == message.from_user.id:
-        await message.reply(
-            "❌ Нельзя применить это действие к себе."
-        )
-        return False
-
-    if target_rank >= actor_rank:
-        await message.reply(
-            "❌ Нельзя управлять пользователем "
-            "с равным или более высоким рангом."
-        )
-        return False
-
-    return True
-
-
-# ============================================================
-# START
-# ============================================================
+# =========================================================
+# /start
+# =========================================================
 
 @dp.message(Command("start"))
 async def start(message: Message):
-    await message.answer(
-        "🤖 <b>EcstaZy</b>\n\n"
-        "Помощник администрации.\n\n"
-        f"Твой ранг: "
-        f"<b>{RANK_NAMES[get_rank(message.chat.id, message.from_user.id)]}</b>",
-        parse_mode="HTML"
-    )
-
-
-# ============================================================
-# /rank
-# ============================================================
-
-@dp.message(Command("rank"))
-async def rank_command(message: Message):
-    args = message.text.split()[1:]
-
-    target = await get_target(message, args)
-
-    if not target:
-        await message.reply(
-            "❌ Укажи пользователя через @username "
-            "или ответь на его сообщение."
-        )
-        return
-
-    if message.reply_to_message:
-        if not args:
-            await message.reply(
-                "❌ Укажи ранг от 1 до 5.\n"
-                "Пример: <code>/rank 2</code>",
-                parse_mode="HTML"
-            )
-            return
-
-        rank_arg = args[0]
-
-    else:
-        if len(args) < 2:
-            await message.reply(
-                "❌ Использование:\n"
-                "<code>/rank @username 2</code>",
-                parse_mode="HTML"
-            )
-            return
-
-        rank_arg = args[1]
-
-    if not rank_arg.isdigit():
-        await message.reply("❌ Ранг должен быть числом от 1 до 5.")
-        return
-
-    new_rank = int(rank_arg)
-
-    if new_rank < 1 or new_rank > 5:
-        await message.reply("❌ Ранг должен быть от 1 до 5.")
-        return
-
-    actor_rank = get_rank(
-        message.chat.id,
-        message.from_user.id
-    )
-
-    if actor_rank <= new_rank:
-        await message.reply(
-            "❌ Нельзя выдать ранг, равный или выше своего."
-        )
-        return
-
-    if not await can_manage(message, target.id, 1):
-        return
-
-    set_rank(
-        message.chat.id,
-        target.id,
-        new_rank
-    )
+    user = get_user(message.from_user)
 
     await message.answer(
-        f"🎖 {mention(target)} получает ранг "
-        f"<b>{new_rank} — {RANK_NAMES[new_rank]}</b>.",
-        parse_mode="HTML"
+        "🎰 <b>Добро пожаловать в игровой бот!</b>\n\n"
+        f"💰 Твой баланс: <b>{user['balance']:,} BON</b>\n\n"
+        "Используй <b>б</b> или <b>баланс</b>, "
+        "чтобы проверить баланс.",
+        parse_mode="HTML",
     )
 
 
-# ============================================================
-# /promote
-# ============================================================
+# =========================================================
+# БАЛАНС
+# =========================================================
 
-@dp.message(Command("promote"))
-async def promote(message: Message):
-    args = message.text.split()[1:]
-
-    target = await get_target(message, args)
-
-    if not target:
-        await message.reply(
-            "❌ Укажи пользователя или ответь на его сообщение."
-        )
-        return
-
-    if not await can_manage(message, target.id, 1):
-        return
-
-    current = get_rank(message.chat.id, target.id)
-
-    if current >= 5:
-        await message.reply("❌ У пользователя максимальный ранг.")
-        return
-
-    new_rank = current + 1
-    actor_rank = get_rank(
-        message.chat.id,
-        message.from_user.id
-    )
-
-    if new_rank >= actor_rank:
-        await message.reply(
-            "❌ Нельзя повысить пользователя "
-            "до своего ранга или выше."
-        )
-        return
-
-    set_rank(
-        message.chat.id,
-        target.id,
-        new_rank
-    )
+async def show_balance(message: Message):
+    user = get_user(message.from_user)
 
     await message.answer(
-        f"⬆️ {mention(target)} повышен.\n\n"
-        f"{current} — {RANK_NAMES[current]}\n"
-        f"⬇️\n"
-        f"{new_rank} — {RANK_NAMES[new_rank]}"
+        f"💰 <b>Твой баланс:</b> {user['balance']:,} BON",
+        parse_mode="HTML",
     )
 
 
-# ============================================================
-# /demote
-# ============================================================
-
-@dp.message(Command("demote"))
-async def demote(message: Message):
-    args = message.text.split()[1:]
-
-    target = await get_target(message, args)
-
-    if not target:
-        await message.reply(
-            "❌ Укажи пользователя или ответь на его сообщение."
-        )
-        return
-
-    if not await can_manage(message, target.id, 1):
-        return
-
-    current = get_rank(message.chat.id, target.id)
-
-    if current <= 1:
-        await message.reply(
-            "❌ Минимальный ранг для администрации — 1."
-        )
-        return
-
-    new_rank = current - 1
-
-    set_rank(
-        message.chat.id,
-        target.id,
-        new_rank
-    )
-
-    await message.answer(
-        f"⬇️ {mention(target)} понижен.\n\n"
-        f"{current} — {RANK_NAMES[current]}\n"
-        f"⬇️\n"
-        f"{new_rank} — {RANK_NAMES[new_rank]}"
-    )
-
-
-# ============================================================
-# /unrank
-# ============================================================
-
-@dp.message(Command("unrank"))
-async def unrank(message: Message):
-    args = message.text.split()[1:]
-
-    target = await get_target(message, args)
-
-    if not target:
-        await message.reply(
-            "❌ Укажи пользователя или ответь на его сообщение."
-        )
-        return
-
-    if not await can_manage(message, target.id, 1):
-        return
-
-    set_rank(
-        message.chat.id,
-        target.id,
-        0
-    )
-
-    await message.answer(
-        f"👤 С {mention(target)} снят ранг."
-    )
-
-
-# ============================================================
-# /warn
-# ============================================================
-
-@dp.message(Command("warn"))
-async def warn(message: Message):
-    args = message.text.split()[1:]
-
-    target = await get_target(message, args)
-
-    if not target:
-        await message.reply(
-            "❌ Укажи пользователя или ответь на сообщение."
-        )
-        return
-
-    if not await can_manage(message, target.id, 1):
-        return
-
-    if message.reply_to_message:
-        data = args
-    else:
-        data = args[1:]
-
-    duration = None
-
-    if data and parse_duration(data[-1]):
-        duration = parse_duration(data.pop())
-
-    reason = " ".join(data)
-
-    if not reason:
-        reason = "Не указана"
-
-    user_key = key(message.chat.id, target.id)
-
-    if user_key not in warnings:
-        warnings[user_key] = []
-
-    warnings[user_key].append({
-        "reason": reason,
-        "expires": duration
+@dp.message(
+    F.text.lower().in_({
+        "б",
+        "баланс",
     })
+)
+async def balance(message: Message):
+    await show_balance(message)
 
-    count = len(warnings[user_key])
+
+@dp.message(Command("balance"))
+async def balance_command(message: Message):
+    await show_balance(message)
+
+
+# =========================================================
+# ПРОФИЛЬ
+# =========================================================
+
+@dp.message(Command("профиль"))
+async def profile(message: Message):
+    user = get_user(message.from_user)
+
+    username = get_username(user)
 
     await message.answer(
-        f"⚠️ {mention(target)} получает варн.\n\n"
-        f"Причина: <b>{reason}</b>\n"
-        f"Срок: <b>{duration_text(duration)}</b>\n"
-        f"Всего варнов: <b>{count}</b>",
-        parse_mode="HTML"
+        "👤 <b>Профиль</b>\n\n"
+        f"Игрок: <b>{username}</b>\n"
+        f"💰 Баланс: <b>{user['balance']:,} BON</b>",
+        parse_mode="HTML",
     )
 
 
-# ============================================================
-# /unwarn
-# ============================================================
+# =========================================================
+# ПЕРЕВОДЫ
+# =========================================================
 
-@dp.message(Command("unwarn"))
-async def unwarn(message: Message):
-    args = message.text.split()[1:]
+def parse_amount(value: str):
+    try:
+        amount = int(value)
 
-    target = await get_target(message, args)
+        if amount <= 0:
+            return None
 
-    if not target:
+        return amount
+
+    except ValueError:
+        return None
+
+
+async def transfer(
+    message: Message,
+    target_id: int,
+    amount: int,
+):
+    sender = get_user(message.from_user)
+
+    if target_id == message.from_user.id:
         await message.reply(
-            "❌ Укажи пользователя или ответь на сообщение."
+            "❌ Нельзя перевести BON самому себе."
         )
         return
-
-    if not await can_manage(message, target.id, 1):
-        return
-
-    user_key = key(message.chat.id, target.id)
-
-    if user_key not in warnings or not warnings[user_key]:
-        await message.reply("❌ У пользователя нет варнов.")
-        return
-
-    amount = 1
-
-    if args:
-        last = args[-1]
-
-        if last.isdigit():
-            amount = int(last)
 
     if amount <= 0:
-        await message.reply("❌ Некорректное количество.")
-        return
-
-    if amount >= len(warnings[user_key]):
-        removed = len(warnings[user_key])
-        warnings[user_key].clear()
-    else:
-        removed = amount
-
-        for _ in range(amount):
-            warnings[user_key].pop()
-
-    await message.answer(
-        f"✅ С {mention(target)} снято варнов: <b>{removed}</b>.",
-        parse_mode="HTML"
-    )
-
-
-# ============================================================
-# /mute
-# ============================================================
-
-@dp.message(Command("mute"))
-async def mute(message: Message):
-    args = message.text.split()[1:]
-
-    target = await get_target(message, args)
-
-    if not target:
         await message.reply(
-            "❌ Укажи пользователя или ответь на сообщение."
+            "❌ Сумма должна быть больше нуля."
         )
         return
 
-    if not await can_manage(message, target.id, 1):
+    if sender["balance"] < amount:
+        await message.reply(
+            "❌ Недостаточно BON."
+        )
+        return
+
+    # Получатель
+    if target_id not in users:
+        users[target_id] = {
+            "username": None,
+            "name": "Игрок",
+            "balance": 0,
+        }
+
+    receiver = users[target_id]
+
+    sender["balance"] -= amount
+    receiver["balance"] += amount
+
+    add_history(
+        message.from_user.id,
+        "transfer",
+        -amount,
+        f"Перевод пользователю {get_username(receiver)}",
+    )
+
+    add_history(
+        target_id,
+        "transfer",
+        amount,
+        f"Получено от {get_username(sender)}",
+    )
+
+    await message.answer(
+        "💸 <b>Перевод выполнен!</b>\n\n"
+        f"👤 Отправитель: {get_username(sender)}\n"
+        f"👤 Получатель: {get_username(receiver)}\n"
+        f"💰 Сумма: <b>{amount:,} BON</b>",
+        parse_mode="HTML",
+    )
+
+
+# ---------------------------------------------------------
+# Перевод ответом:
+#
+# п 500
+#
+# ---------------------------------------------------------
+
+@dp.message(F.text)
+async def reply_transfer(message: Message):
+    text = message.text.strip()
+
+    if not text.lower().startswith("п "):
+        return
+
+    if not message.reply_to_message:
+        return
+
+    parts = text.split()
+
+    if len(parts) != 2:
+        await message.reply(
+            "❌ Использование:\n"
+            "<code>п 500</code>\n\n"
+            "Команду нужно написать ответом на сообщение.",
+            parse_mode="HTML",
+        )
+        return
+
+    amount = parse_amount(parts[1])
+
+    if amount is None:
+        await message.reply(
+            "❌ Укажи корректную сумму."
+        )
+        return
+
+    target = message.reply_to_message.from_user
+
+    # Регистрируем получателя
+    get_user(target)
+
+    await transfer(
+        message,
+        target.id,
+        amount,
+    )
+
+
+# ---------------------------------------------------------
+# Перевод по ID:
+#
+# п 123456789 500
+#
+# ---------------------------------------------------------
+
+@dp.message(F.text)
+async def id_transfer(message: Message):
+    text = message.text.strip()
+
+    if not text.lower().startswith("п "):
         return
 
     if message.reply_to_message:
-        data = args
-    else:
-        data = args[1:]
-
-    duration = None
-
-    if data and parse_duration(data[-1]):
-        duration = parse_duration(data.pop())
-
-    reason = " ".join(data) or "Не указана"
-
-    try:
-        await bot.restrict_chat_member(
-            chat_id=message.chat.id,
-            user_id=target.id,
-            permissions={
-                "can_send_messages": False
-            },
-            until_date=duration
-        )
-
-    except Exception as e:
-        logging.error(e)
-
-        await message.reply(
-            "❌ Не удалось выдать мут.\n"
-            "Проверь, что EcstaZy — администратор "
-            "и имеет право ограничивать участников."
-        )
         return
 
-    mutes[key(message.chat.id, target.id)] = {
-        "reason": reason,
-        "expires": duration
-    }
+    parts = text.split()
 
-    await message.answer(
-        f"🔇 {mention(target)} получил мут.\n\n"
-        f"Причина: <b>{reason}</b>\n"
-        f"До: <b>{duration_text(duration)}</b>",
-        parse_mode="HTML"
-    )
-
-
-# ============================================================
-# /unmute
-# ============================================================
-
-@dp.message(Command("unmute"))
-async def unmute(message: Message):
-    args = message.text.split()[1:]
-
-    target = await get_target(message, args)
-
-    if not target:
-        await message.reply(
-            "❌ Укажи пользователя или ответь на сообщение."
-        )
-        return
-
-    if not await can_manage(message, target.id, 1):
+    if len(parts) != 3:
         return
 
     try:
-        await bot.restrict_chat_member(
-            chat_id=message.chat.id,
-            user_id=target.id,
-            permissions={
-                "can_send_messages": True,
-                "can_send_audios": True,
-                "can_send_documents": True,
-                "can_send_photos": True,
-                "can_send_videos": True,
-                "can_send_video_notes": True,
-                "can_send_voice_notes": True,
-                "can_send_polls": True,
-                "can_send_other_messages": True,
-                "can_add_web_page_previews": True
-            }
+        target_id = int(parts[1])
+    except ValueError:
+        await message.reply(
+            "❌ ID пользователя должен быть числом."
         )
-
-    except Exception as e:
-        logging.error(e)
-
-        await message.reply("❌ Не удалось снять мут.")
         return
 
-    mutes.pop(
-        key(message.chat.id, target.id),
-        None
+    amount = parse_amount(parts[2])
+
+    if amount is None:
+        await message.reply(
+            "❌ Укажи корректную сумму."
+        )
+        return
+
+    await transfer(
+        message,
+        target_id,
+        amount,
     )
+
+
+# =========================================================
+# /ИСТОРИЯ
+# =========================================================
+
+@dp.message(Command("история"))
+async def history_command(message: Message):
+    get_user(message.from_user)
+
+    records = history[message.from_user.id]
+
+    if not records:
+        await message.answer(
+            "📜 История пока пуста."
+        )
+        return
+
+    records = records[-10:]
+
+    text = "📜 <b>Последние операции</b>\n\n"
+
+    for record in reversed(records):
+        amount = record["amount"]
+
+        if amount > 0:
+            amount_text = f"+{amount:,}"
+        else:
+            amount_text = f"{amount:,}"
+
+        text += (
+            f"• {record['description']}\n"
+            f"  💰 {amount_text} BON\n\n"
+        )
 
     await message.answer(
-        f"🔊 {mention(target)} снова может разговаривать."
+        text,
+        parse_mode="HTML",
     )
 
 
-# ============================================================
-# /ban
-# ============================================================
+# =========================================================
+# TOP
+# =========================================================
 
-@dp.message(Command("ban"))
-async def ban(message: Message):
-    args = message.text.split()[1:]
+async def show_top(message: Message, amount: int):
+    get_user(message.from_user)
 
-    target = await get_target(message, args)
+    amount = max(1, min(amount, 50))
 
-    if not target:
-        await message.reply(
-            "❌ Укажи пользователя или ответь на сообщение."
+    sorted_users = sorted(
+        users.items(),
+        key=lambda item: item[1]["balance"],
+        reverse=True,
+    )
+
+    text = "🏆 <b>ТОП игроков</b>\n\n"
+
+    for position, (user_id, user) in enumerate(
+        sorted_users[:amount],
+        start=1,
+    ):
+        text += (
+            f"<b>{position}.</b> "
+            f"{get_username(user)} — "
+            f"💰 {user['balance']:,} BON\n"
         )
-        return
-
-    if not await can_manage(message, target.id, 2):
-        return
-
-    if message.reply_to_message:
-        data = args
-    else:
-        data = args[1:]
-
-    duration = None
-
-    if data and parse_duration(data[-1]):
-        duration = parse_duration(data.pop())
-
-    reason = " ".join(data) or "Не указана"
-
-    try:
-        await bot.ban_chat_member(
-            chat_id=message.chat.id,
-            user_id=target.id,
-            until_date=duration
-        )
-
-    except Exception as e:
-        logging.error(e)
-
-        await message.reply(
-            "❌ Не удалось заблокировать пользователя."
-        )
-        return
-
-    bans[key(message.chat.id, target.id)] = {
-        "reason": reason,
-        "expires": duration
-    }
 
     await message.answer(
-        f"🔨 {mention(target)} заблокирован.\n\n"
-        f"Причина: <b>{reason}</b>\n"
-        f"До: <b>{duration_text(duration)}</b>",
-        parse_mode="HTML"
+        text,
+        parse_mode="HTML",
     )
 
 
-# ============================================================
-# /unban
-# ============================================================
+@dp.message(Command("top"))
+async def top_command(message: Message):
+    parts = message.text.split()
 
-@dp.message(Command("unban"))
-async def unban(message: Message):
-    args = message.text.split()[1:]
+    amount = 10
 
-    if not args:
-        await message.reply(
-            "❌ Укажи @username."
-        )
-        return
-
-    username = args[0].lstrip("@")
-
-    actor_rank = get_rank(
-        message.chat.id,
-        message.from_user.id
-    )
-
-    if actor_rank < 2:
-        await message.reply(
-            "❌ Для разбана нужен ранг 2+."
-        )
-        return
-
-    # Ищем среди сохранённых банов.
-    target_id = None
-
-    for (chat_id, user_id), data in bans.items():
-        if chat_id != message.chat.id:
-            continue
-
+    if len(parts) > 1:
         try:
-            member = await bot.get_chat_member(
-                message.chat.id,
-                user_id
+            amount = int(parts[1])
+        except ValueError:
+            await message.reply(
+                "❌ Количество должно быть числом."
             )
+            return
 
-            if (
-                member.user.username
-                and member.user.username.lower() == username.lower()
-            ):
-                target_id = user_id
-                target = member.user
-                break
+    await show_top(message, amount)
 
-        except Exception:
-            pass
 
-    if target_id is None:
-        await message.reply(
-            "❌ Не удалось найти этого пользователя.\n"
-            "Для разбана лучше использовать username "
-            "пользователя, который был забанен EcstaZy."
+# =========================================================
+# ЯЗЫК
+# =========================================================
+
+@dp.message(Command("lang"))
+async def lang_command(message: Message):
+    parts = message.text.split()
+
+    if len(parts) != 2:
+        await message.answer(
+            "🌐 Выбери язык:\n\n"
+            "/lang ru\n"
+            "/lang uk\n"
+            "/lang en"
         )
         return
 
-    target_rank = get_rank(
-        message.chat.id,
-        target_id
-    )
+    lang = parts[1].lower()
 
-    if target_rank >= actor_rank:
-        await message.reply(
-            "❌ Нельзя управлять пользователем "
-            "с равным или более высоким рангом."
+    if lang not in {"ru", "uk", "en"}:
+        await message.answer(
+            "❌ Доступные языки: ru, uk, en."
         )
         return
 
-    try:
-        await bot.unban_chat_member(
-            chat_id=message.chat.id,
-            user_id=target_id
-        )
+    languages[message.from_user.id] = lang
 
-    except Exception as e:
-        logging.error(e)
-
-        await message.reply("❌ Не удалось разбанить пользователя.")
-        return
-
-    bans.pop(
-        key(message.chat.id, target_id),
-        None
-    )
+    names = {
+        "ru": "русский 🇷🇺",
+        "uk": "українська 🇺🇦",
+        "en": "English 🇬🇧",
+    }
 
     await message.answer(
-        f"✅ {mention(target)} разбанен."
+        f"🌐 Язык изменён на {names[lang]}."
     )
 
 
-# ============================================================
-# RUN
-# ============================================================
+# =========================================================
+# МИННОЕ ПОЛЕ
+# =========================================================
+
+@dp.message(
+    F.text.lower().regexp(r"^мины\s+\d+$")
+)
+async def mines(message: Message):
+    user = get_user(message.from_user)
+
+    parts = message.text.split()
+
+    bet = int(parts[1])
+
+    if bet <= 0:
+        await message.reply(
+            "❌ Ставка должна быть больше нуля."
+        )
+        return
+
+    if user["balance"] < bet:
+        await message.reply(
+            "❌ Недостаточно BON."
+        )
+        return
+
+    # Пока только интерфейс.
+    # Игровую механику подключим следующим этапом.
+
+    user["balance"] -= bet
+
+    add_history(
+        message.from_user.id,
+        "game",
+        -bet,
+        "Ставка в минном поле",
+    )
+
+    keyboard = []
+
+    row = []
+
+    for number in range(1, 30):
+        row.append(
+            InlineKeyboardButton(
+                text="❓",
+                callback_data=f"mine:{message.from_user.id}:{number}",
+            )
+        )
+
+        if len(row) == 5:
+            keyboard.append(row)
+            row = []
+
+    if row:
+        keyboard.append(row)
+
+    await message.answer(
+        f"💣 <b>{get_username(user)}, вы начали игру "
+        f"минное поле!</b>\n\n"
+        f"💰 Ставка: <b>{bet:,} BON</b>",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=keyboard
+        ),
+        parse_mode="HTML",
+    )
+
+
+# =========================================================
+# ЗАГЛУШКА КНОПОК МИННОГО ПОЛЯ
+# =========================================================
+
+@dp.callback_query(F.data.startswith("mine:"))
+async def mine_button(callback: CallbackQuery):
+    await callback.answer(
+        "🚧 Механика минного поля будет добавлена следующим этапом.",
+        show_alert=True,
+    )
+
+
+# =========================================================
+# ДЖОКЕР
+# =========================================================
+
+@dp.message(
+    F.text.lower().regexp(r"^джокер\s+\d+$")
+)
+async def joker(message: Message):
+    user = get_user(message.from_user)
+
+    parts = message.text.split()
+
+    bet = int(parts[1])
+
+    if bet <= 0:
+        await message.reply(
+            "❌ Ставка должна быть больше нуля."
+        )
+        return
+
+    if user["balance"] < bet:
+        await message.reply(
+            "❌ Недостаточно BON."
+        )
+        return
+
+    user["balance"] -= bet
+
+    add_history(
+        message.from_user.id,
+        "game",
+        -bet,
+        "Ставка в Джокере",
+    )
+
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                text="❓",
+                callback_data=f"joker:{message.from_user.id}:1",
+            ),
+            InlineKeyboardButton(
+                text="❓",
+                callback_data=f"joker:{message.from_user.id}:2",
+            ),
+            InlineKeyboardButton(
+                text="❓",
+                callback_data=f"joker:{message.from_user.id}:3",
+            ),
+        ]
+    ]
+
+    await message.answer(
+        f"🃏 <b>{get_username(user)}, вы начали игру Джокер!</b>\n\n"
+        f"💰 Ставка: <b>{bet:,} BON</b>",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=keyboard
+        ),
+        parse_mode="HTML",
+    )
+
+
+# =========================================================
+# CALLBACK ДЖОКЕРА
+# =========================================================
+
+@dp.callback_query(F.data.startswith("joker:"))
+async def joker_button(callback: CallbackQuery):
+    await callback.answer(
+        "🚧 Механика Джокера будет добавлена следующим этапом.",
+        show_alert=True,
+    )
+
+
+# =========================================================
+# ЗАПУСК
+# =========================================================
 
 async def main():
-    print("EcstaZy запущен.")
+    logging.info("запускается...")
+
+    await bot.delete_webhook(drop_pending_updates=True)
 
     await dp.start_polling(bot)
 
