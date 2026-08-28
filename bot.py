@@ -52,7 +52,7 @@ languages = defaultdict(lambda: "ru")
 # БАЗОВЫЕ ФУНКЦИИ
 # =========================================================
 
-START_BALANCE = 1000
+START_BALANCE = 632662726
 
 
 def get_user(tg_user):
