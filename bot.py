@@ -1,209 +1,179 @@
-
 import asyncio
 import logging
 import os
-
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import Command, CommandStart
 from aiogram.types import (
-    Message,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    WebAppInfo,
+CallbackQuery,
+InlineKeyboardButton,
+InlineKeyboardMarkup,
+Message,
+WebAppInfo,
 )
-from dotenv import load_dotenv
-
-
-# =========================
-# НАСТРОЙКИ
-# =========================
-
-load_dotenv()
-
-BOT_TOKEN = os.getenv("BOT_TOKEN", "ВСТАВЬ_ТОКЕН_СЮДА")
-
-ADMIN_ID = 8558737152
-
-# Пока ставим временный URL.
-# Позже сюда вставим HTTPS-ссылку нашего HTML Mini App.
-WEBAPP_URL = os.getenv(
-    "WEBAPP_URL",
-    "https://example.com"
-)
-
-
-# =========================
-# ЛОГИ
-# =========================
-
+============================================================
+НАСТРОЙКИ RAILWAY
+============================================================
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+WEBAPP_URL = os.getenv("WEBAPP_URL", "https://example.com")
+if not BOT_TOKEN:
+raise RuntimeError("❌ BOT_TOKEN не найден в Railway Variables")
+============================================================
+ЛОГИ
+============================================================
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
+level=logging.INFO,
+format="%(asctime)s | %(levelname)s | %(message)s",
 )
-
-
-# =========================
-# BOT / DISPATCHER
-# =========================
-
+logger = logging.getLogger(name)
+============================================================
+BOT
+============================================================
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-
-
-# =========================
-# КЛАВИАТУРЫ
-# =========================
-
+============================================================
+КЛАВИАТУРЫ
+============================================================
 def main_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="🛍 Открыть магазин",
-                    web_app=WebAppInfo(url=WEBAPP_URL)
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="📦 Мои покупки",
-                    callback_data="my_orders"
-                ),
-                InlineKeyboardButton(
-                    text="👤 Профиль",
-                    callback_data="profile"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🎫 Поддержка",
-                    callback_data="support"
-                )
-            ]
-        ]
-    )
-
-
+return InlineKeyboardMarkup(
+inline_keyboard=[
+[
+InlineKeyboardButton(
+text="🛍 Открыть магазин",
+web_app=WebAppInfo(url=WEBAPP_URL),
+)
+],
+[
+InlineKeyboardButton(
+text="📦 Мои покупки",
+callback_data="orders",
+),
+InlineKeyboardButton(
+text="👤 Профиль",
+callback_data="profile",
+),
+],
+[
+InlineKeyboardButton(
+text="🎫 Поддержка",
+callback_data="support",
+)
+],
+]
+)
 def admin_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="🛍 Открыть магазин",
-                    web_app=WebAppInfo(url=WEBAPP_URL)
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="⚙️ Админ-панель",
-                    web_app=WebAppInfo(url=WEBAPP_URL)
-                )
-            ]
-        ]
-    )
-
-
-# =========================
-# /START
-# =========================
-
+return InlineKeyboardMarkup(
+inline_keyboard=[
+[
+InlineKeyboardButton(
+text="🛍 Открыть магазин",
+web_app=WebAppInfo(url=WEBAPP_URL),
+)
+],
+[
+InlineKeyboardButton(
+text="⚙️ Админ-панель",
+web_app=WebAppInfo(url=WEBAPP_URL),
+)
+],
+]
+)
+============================================================
+/START
+============================================================
 @dp.message(CommandStart())
 async def start_handler(message: Message):
-    user = message.from_user
+user = message.from_user
+if user is None:
+    return
 
-    text = (
-        f"👋 Привет, {user.first_name}!\n\n"
-        "🎮 Добро пожаловать в игровой маркетплейс.\n\n"
-        "Здесь можно будет покупать:\n"
-        "🎮 игровые аккаунты\n"
-        "💰 игровую валюту\n"
-        "🔑 ключи\n"
-        "🎁 предметы и многое другое.\n\n"
-        "Нажми кнопку ниже, чтобы открыть магазин."
-    )
+text = (
+    f"👋 Привет, {user.first_name}!\n\n"
+    "🎮 Добро пожаловать в игровой маркетплейс!\n\n"
+    "У нас можно будет покупать:\n"
+    "🎮 Игровые аккаунты\n"
+    "💰 Игровую валюту\n"
+    "🔑 Ключи\n"
+    "🎁 Предметы\n"
+    "➕ И многое другое.\n\n"
+    "Нажми кнопку ниже, чтобы открыть магазин."
+)
 
-    if user.id == ADMIN_ID:
-        text += "\n\n👑 Вы вошли как администратор."
-
-        await message.answer(
-            text,
-            reply_markup=admin_menu()
-        )
-    else:
-        await message.answer(
-            text,
-            reply_markup=main_menu()
-        )
-
-
-# =========================
-# /ADMIN
-# =========================
-
-@dp.message(Command("admin"))
-async def admin_handler(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("⛔ У вас нет доступа к админ-панели.")
-        return
+if user.id == ADMIN_ID:
+    text += "\n\n👑 Вы вошли как администратор."
 
     await message.answer(
-        "👑 Панель администратора\n\n"
-        "Выберите нужный раздел:",
-        reply_markup=admin_menu()
+        text,
+        reply_markup=admin_menu(),
     )
+else:
+    await message.answer(
+        text,
+        reply_markup=main_menu(),
+    )
+============================================================
+/ADMIN
+============================================================
+@dp.message(Command("admin"))
+async def admin_handler(message: Message):
+user = message.from_user
+if user is None or user.id != ADMIN_ID:
+    await message.answer("⛔ Доступ запрещён.")
+    return
 
-
-# =========================
-# CALLBACKS
-# =========================
-
+await message.answer(
+    "👑 Админ-панель\n\n"
+    "Здесь будет управление магазином.",
+    reply_markup=admin_menu(),
+)
+============================================================
+ПРОФИЛЬ
+============================================================
 @dp.callback_query(F.data == "profile")
-async def profile_handler(callback):
-    user = callback.from_user
+async def profile_handler(callback: CallbackQuery):
+user = callback.from_user
+await callback.message.answer(
+    "👤 Профиль\n\n"
+    f"🆔 Telegram ID: {user.id}\n"
+    f"👤 Имя: {user.first_name}\n\n"
+    "📦 Покупок: 0"
+)
 
-    await callback.message.answer(
-        "👤 Ваш профиль\n\n"
-        f"🆔 ID: {user.id}\n"
-        f"👤 Имя: {user.first_name}\n\n"
-        "📦 Покупок: пока 0"
-    )
-
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "my_orders")
-async def orders_handler(callback):
-    await callback.message.answer(
-        "📦 Мои покупки\n\n"
-        "У вас пока нет покупок."
-    )
-
-    await callback.answer()
-
-
+await callback.answer()
+============================================================
+ПОКУПКИ
+============================================================
+@dp.callback_query(F.data == "orders")
+async def orders_handler(callback: CallbackQuery):
+await callback.message.answer(
+"📦 Мои покупки\n\n"
+"У вас пока нет покупок."
+)
+await callback.answer()
+============================================================
+ПОДДЕРЖКА
+============================================================
 @dp.callback_query(F.data == "support")
-async def support_handler(callback):
-    await callback.message.answer(
-        "🎫 Поддержка\n\n"
-        "Если у вас возникла проблема с заказом, "
-        "напишите администратору."
-    )
-
-    await callback.answer()
-
-
-# =========================
-# ЗАПУСК
-# =========================
-
+async def support_handler(callback: CallbackQuery):
+await callback.message.answer(
+"🎫 Поддержка\n\n"
+"Опишите вашу проблему следующим сообщением."
+)
+await callback.answer()
+============================================================
+ЗАПУСК
+============================================================
 async def main():
-    logging.info("Бот запускается...")
+logger.info("🚀 Запуск бота...")
+await bot.delete_webhook(drop_pending_updates=True)
 
-    await bot.delete_webhook(drop_pending_updates=True)
+me = await bot.get_me()
 
-    logging.info("Бот успешно запущен.")
+logger.info(
+    "✅ Бот запущен: @%s",
+    me.username,
+)
 
-    await dp.start_polling(bot)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+await dp.start_polling(bot)
+if name == "main":
+asyncio.run(main())
