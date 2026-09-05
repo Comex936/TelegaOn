@@ -13,12 +13,7 @@ from aiogram.types import (
 )
 
 
-# =========================================================
-# НАСТРОЙКИ
-# =========================================================
-
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 WEBAPP_URL = os.getenv(
@@ -27,24 +22,12 @@ WEBAPP_URL = os.getenv(
 )
 
 
-# =========================================================
-# ПРОВЕРКА НАСТРОЕК
-# =========================================================
-
 if not BOT_TOKEN:
-    raise RuntimeError(
-        "BOT_TOKEN не настроен в Railway Variables"
-    )
+    raise RuntimeError("BOT_TOKEN не настроен в Railway Variables")
 
 if ADMIN_ID == 0:
-    raise RuntimeError(
-        "ADMIN_ID не настроен в Railway Variables"
-    )
+    raise RuntimeError("ADMIN_ID не настроен в Railway Variables")
 
-
-# =========================================================
-# ЛОГИРОВАНИЕ
-# =========================================================
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,23 +35,17 @@ logging.basicConfig(
 )
 
 
-# =========================================================
-# BOT
-# =========================================================
-
-bot = Bot(
-    token=BOT_TOKEN
-)
-
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 
 # =========================================================
-# ГЛАВНОЕ МЕНЮ ОБЫЧНОГО ПОЛЬЗОВАТЕЛЯ
+# ГЛАВНОЕ МЕНЮ ПОЛЬЗОВАТЕЛЯ
 # =========================================================
 
-def main_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
+def main_menu():
+
+    keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
@@ -97,13 +74,16 @@ def main_menu() -> InlineKeyboardMarkup:
         ]
     )
 
+    return keyboard
+
 
 # =========================================================
 # МЕНЮ АДМИНИСТРАТОРА
 # =========================================================
 
-def admin_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
+def admin_menu():
+
+    keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
@@ -118,17 +98,11 @@ def admin_menu() -> InlineKeyboardMarkup:
                     text="👤 Профиль",
                     callback_data="profile"
                 )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="👑 Панель товаров",
-                    web_app=WebAppInfo(
-                        url=WEBAPP_URL + "#admin"
-                    )
-                ]
             ]
         ]
     )
+
+    return keyboard
 
 
 # =========================================================
@@ -137,14 +111,11 @@ def admin_menu() -> InlineKeyboardMarkup:
 
 @dp.message(CommandStart())
 async def start_handler(message: Message):
+
     user = message.from_user
 
     if user is None:
         return
-
-    # -----------------------------------------------------
-    # Администратор
-    # -----------------------------------------------------
 
     if user.id == ADMIN_ID:
 
@@ -152,8 +123,7 @@ async def start_handler(message: Message):
             f"👋 Привет, {user.first_name}!\n\n"
             "🎮 Добро пожаловать в игровой маркетплейс!\n\n"
             "👑 Вы вошли как администратор.\n\n"
-            "Через магазин можно просматривать товары,\n"
-            "а через панель товаров — управлять ими."
+            "Откройте магазин или профиль."
         )
 
         await message.answer(
@@ -162,10 +132,6 @@ async def start_handler(message: Message):
         )
 
         return
-
-    # -----------------------------------------------------
-    # Обычный пользователь
-    # -----------------------------------------------------
 
     text = (
         f"👋 Привет, {user.first_name}!\n\n"
@@ -191,12 +157,12 @@ async def start_handler(message: Message):
 
 @dp.message(Command("admin"))
 async def admin_handler(message: Message):
+
     user = message.from_user
 
     if user is None:
         return
 
-    # Проверяем Telegram ID
     if user.id != ADMIN_ID:
 
         await message.answer(
@@ -207,7 +173,7 @@ async def admin_handler(message: Message):
 
     await message.answer(
         "👑 Админ-панель\n\n"
-        "Здесь вы можете управлять товарами магазина.",
+        "Откройте профиль для управления магазином.",
         reply_markup=admin_menu()
     )
 
@@ -221,32 +187,21 @@ async def profile_handler(callback: CallbackQuery):
 
     user = callback.from_user
 
-    # Username
     if user.username:
-        username_text = (
-            f"📛 Username: @{user.username}"
-        )
+        username = f"@{user.username}"
     else:
-        username_text = (
-            "📛 Username: не указан"
-        )
+        username = "не указан"
 
-    # Основной текст
     text = (
         "👤 Профиль\n\n"
         f"🆔 Telegram ID: {user.id}\n"
         f"👤 Имя: {user.first_name}\n"
-        f"{username_text}\n\n"
+        f"📛 Username: {username}\n\n"
         "📦 Покупок: 0"
     )
 
-    # -----------------------------------------------------
-    # Кнопки профиля
-    # -----------------------------------------------------
-
     buttons = []
 
-    # Мои покупки
     buttons.append(
         [
             InlineKeyboardButton(
@@ -256,13 +211,7 @@ async def profile_handler(callback: CallbackQuery):
         ]
     )
 
-    # -----------------------------------------------------
-    # КНОПКА АДМИНА
-    # -----------------------------------------------------
-    #
-    # Обычные пользователи её НЕ увидят.
-    #
-
+    # Только администратор видит эту кнопку
     if user.id == ADMIN_ID:
 
         buttons.append(
@@ -276,7 +225,6 @@ async def profile_handler(callback: CallbackQuery):
             ]
         )
 
-    # Поддержка
     buttons.append(
         [
             InlineKeyboardButton(
@@ -329,59 +277,37 @@ async def support_handler(callback: CallbackQuery):
 
 
 # =========================================================
-# ОБРАБОТКА НЕИЗВЕСТНЫХ ТЕКСТОВЫХ СООБЩЕНИЙ
+# ОБЫЧНЫЕ СООБЩЕНИЯ
 # =========================================================
 
 @dp.message()
-async def message_handler(message: Message):
+async def other_messages(message: Message):
 
-    # Не отвечаем на пустые сообщения
     if not message.text:
         return
 
-    # Не мешаем обработчикам команд
     if message.text.startswith("/"):
         return
 
     await message.answer(
-        "🤖 Используйте меню бота ниже."
-        "\n\n"
-        "Чтобы открыть магазин, нажмите "
-        "«🛍 Открыть магазин»."
+        "🤖 Используйте кнопки меню."
     )
 
 
 # =========================================================
-# ЗАПУСК БОТА
+# ЗАПУСК
 # =========================================================
 
 async def main():
 
-    logging.info(
-        "========================================"
-    )
+    logging.info("Запуск Game Market Bot...")
+    logging.info("ADMIN_ID: %s", ADMIN_ID)
+    logging.info("WEBAPP_URL: %s", WEBAPP_URL)
 
-    logging.info(
-        "Запуск Game Market Bot..."
-    )
-
-    logging.info(
-        "ADMIN_ID: %s",
-        ADMIN_ID
-    )
-
-    logging.info(
-        "WEBAPP_URL: %s",
-        WEBAPP_URL
-    )
-
-    # Удаляем старый webhook.
-    # После этого бот работает через polling.
     await bot.delete_webhook(
         drop_pending_updates=True
     )
 
-    # Проверяем подключение к Telegram
     me = await bot.get_me()
 
     logging.info(
@@ -389,15 +315,6 @@ async def main():
         me.username
     )
 
-    logging.info(
-        "Бот успешно запущен!"
-    )
-
-    logging.info(
-        "========================================"
-    )
-
-    # Запускаем polling
     await dp.start_polling(bot)
 
 
